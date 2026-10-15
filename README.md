@@ -41,14 +41,15 @@ Dane wrażliwe (lokalizacja łowiska, adresy e-mail, klucze API) **nie są wpisa
 | `LATITUDE` / `LONGITUDE` | Współrzędne łowiska |
 | `LOCATION_NAME` | Nazwa łowiska w treści maila |
 
-> Skrypt czyta te zmienne z `os.environ`, więc jeśli wolisz, ustaw je zamiast pliku `.env` bezpośrednio w `crontab` albo `/etc/environment`.
+> Skrypt sam wczytuje plik `.env` leżący obok niego. Zmienne ustawione już w środowisku mają pierwszeństwo, więc jeśli wolisz, ustaw je zamiast pliku `.env` bezpośrednio w `crontab` albo `/etc/environment`.
 
 ## Struktura repo
 
 ```
-rybackie-prognozy/
-├── rybackie_prognozy.py   # główny skrypt
+Na_Ryby/
+├── fishing_forecast.py    # główny skrypt (na Raspberry Pi zapisany jako rybackie_prognozy.py)
 ├── requirements.txt       # zależności Pythona
 ├── .env.example           # przykładowa konfiguracja (bez prawdziwych danych)
+├── IMG_271*.png           # zrzuty ekranu przykładowego maila
 └── README.md
 ```
