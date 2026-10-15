@@ -249,7 +249,137 @@ def wyciagnij_dane_dla_dnia(surowe: dict, target_date: date) -> dict:
     }
 
 
-def analiza_ai(lokalizacja: str, dane_sobota: dict, dane_niedziela: dict) -> str:
+# ============================ PRZEPISY WĘDKARSKIE ============================
+# Na podstawie "Szczegółowych Zasad Wędkowania w wodach Okręgu Mazowieckiego PZW"
+# (wersja 2025, ompzw.pl). Przepisy zmieniają się co roku - sprawdź aktualną wersję
+# i popraw tabelę, jeśli coś się zmieniło.
+PRZEPISY_ZRODLO = "Zasady wędkowania Okręgu Mazowieckiego PZW (2025)"
+
+# gatunek: (wymiar ochronny w cm lub None, limit dzienny, okres zakazu zabierania (od, do) jako (miesiąc, dzień) lub None)
+# Okres może przechodzić przez Nowy Rok (np. węgorz 1.12-31.03).
+GATUNKI = {
+    "Szczupak": (60, "1 szt.*", ((1, 1), (4, 30))),
+    "Sandacz": (60, "1 szt.*", ((1, 1), (6, 15))),
+    "Boleń": (45, "1 szt.*", ((1, 1), (4, 30))),
+    "Brzana": (50, "1 szt.*", ((1, 1), (6, 30))),
+    "Sum": (70, "2 szt.", ((1, 1), (5, 31))),
+    "Węgorz": (60, "2 szt.", ((12, 1), (3, 31))),
+    "Okoń": (None, "5 szt. powyżej 30 cm", None),
+    "Karp": (35, "2 szt.", None),
+    "Lin": (30, "3 szt.", None),
+    "Kleń": (35, "3 szt. (z jaziem)", None),
+    "Jaź": (35, "3 szt. (z kleniem)", None),
+    "Karaś pospolity": (20, "5 szt.", None),
+    "Certa": (30, "5 szt.", ((1, 1), (6, 30))),
+    "Świnka": (25, "—", ((1, 1), (5, 15))),
+    "Miętus": (25, "—", ((12, 1), (2, 29))),
+    "Lipień": (45, "1 szt.", ((3, 1), (5, 31))),
+    "Pstrąg potokowy": (45, "1 szt.", ((9, 1), (12, 31))),
+}
+GATUNKI_PRZYPIS = ("* łącznie 1 szt. na dobę z grupy szczupak/sandacz/boleń/brzana; "
+                   "drapieżniki max 24 szt. rocznie.")
+
+# Gatunki pokazywane w mailu (wymiary, okresy ochronne, zmiany). Dopisz te, które łowisz.
+GATUNKI_W_MAILU = ["Szczupak", "Sandacz", "Okoń", "Sum", "Boleń", "Węgorz", "Karp", "Lin", "Kleń"]
+
+# Zasady lokalne dla łowiska z konfiguracji (domyślnie Zalew Zegrzyński).
+# Jeśli łowisz gdzie indziej, zamień tę listę albo ustaw ją na pustą.
+# (opis, okres (od, do) jako (miesiąc, dzień) lub None gdy obowiązuje cały rok)
+ZASADY_LOKALNE = [
+    ("Zakaz spinningu przynętą dłuższą niż 5 cm (wszystkie wody okręgu)", ((1, 1), (4, 30))),
+    ("Obręb ochronny Zegrze (między Zegrzem Płn. a Nieporętem): całkowity zakaz połowu", ((11, 1), (3, 31))),
+    ("Zakaz łowienia z łodzi: południowa część zalewu (most w Zegrzu–Rynia) "
+     "i ujście Bugu (Kania Nowa–Arciechów)", ((5, 1), (6, 15))),
+    ("Wymiar gospodarczy na Zegrzu: sandacz 60–85 cm, szczupak 60–90 cm "
+     "(większe wypuszczasz)", None),
+    ("Zakaz połowu przy zaporze w Dębem (próg i pasy 50 m wzdłuż kierownic)", None),
+]
+
+# ============================================================================
+
+
+def w_okresie(d: date, okres) -> bool:
+    """Czy data d mieści się w okresie ((mies_od, dzien_od), (mies_do, dzien_do)), także przez Nowy Rok."""
+    if okres is None:
+        return True
+    od, do = okres
+    md = (d.month, d.day)
+    if od <= do:
+        return od <= md <= do
+    return md >= od or md <= do
+
+
+def najblizszy_dzien(d: date, md) -> date:
+    """Najbliższa data >= d z podanym (miesiąc, dzień); 29 lutego w roku nieprzestępnym to 28 lutego."""
+    for rok in (d.year, d.year + 1):
+        mies, dzien = md
+        try:
+            kandydat = date(rok, mies, dzien)
+        except ValueError:
+            kandydat = date(rok, mies, dzien - 1)
+        if kandydat >= d:
+            return kandydat
+    return kandydat
+
+
+def okres_tekst(okres) -> str:
+    (m1, d1), (m2, d2) = okres
+    return f"{d1:02d}.{m1:02d}–{d2:02d}.{m2:02d}"
+
+
+def przepisy_na_weekend(sobota: date, niedziela: date, dni_wprzod: int = 14) -> dict:
+    """Zbiera okresy ochronne, wymiary i lokalne zakazy aktualne w weekend oraz zmiany w najbliższych dniach."""
+    ochronne = []
+    for nazwa in GATUNKI_W_MAILU:
+        okres = GATUNKI[nazwa][2]
+        if okres and (w_okresie(sobota, okres) or w_okresie(niedziela, okres)):
+            koniec = najblizszy_dzien(sobota, okres[1])
+            ochronne.append({"gatunek": nazwa, "okres": okres_tekst(okres),
+                             "mozna_zabierac_od": (koniec + timedelta(days=1)).strftime("%d.%m")})
+
+    wymiary = []
+    for nazwa in GATUNKI_W_MAILU:
+        wymiar, limit, okres = GATUNKI[nazwa]
+        wymiary.append({
+            "gatunek": nazwa,
+            "wymiar": f"{wymiar} cm" if wymiar else "—",
+            "limit": limit,
+            "okres_ochronny_teraz": bool(okres and (w_okresie(sobota, okres) or w_okresie(niedziela, okres))),
+        })
+
+    lokalne = [opis for opis, okres in ZASADY_LOKALNE
+               if w_okresie(sobota, okres) or w_okresie(niedziela, okres)]
+
+    # Zmiany w ciągu najbliższych dni (po weekendzie): początek lub koniec okresów
+    zmiany = []
+    horyzont = niedziela + timedelta(days=dni_wprzod)
+    for nazwa in GATUNKI_W_MAILU:
+        okres = GATUNKI[nazwa][2]
+        if not okres:
+            continue
+        start = najblizszy_dzien(niedziela + timedelta(days=1), okres[0])
+        if start <= horyzont:
+            zmiany.append((start, f"od {start.strftime('%d.%m')} okres ochronny: {nazwa.lower()}"))
+        koniec = najblizszy_dzien(niedziela, okres[1]) + timedelta(days=1)
+        if niedziela < koniec <= horyzont:
+            zmiany.append((koniec, f"od {koniec.strftime('%d.%m')} można zabierać: {nazwa.lower()}"))
+    for opis, okres in ZASADY_LOKALNE:
+        if not okres:
+            continue
+        start = najblizszy_dzien(niedziela + timedelta(days=1), okres[0])
+        if start <= horyzont:
+            zmiany.append((start, f"od {start.strftime('%d.%m')}: {opis}"))
+    zmiany.sort(key=lambda z: z[0])
+
+    return {
+        "okres_ochronny_teraz": ochronne,
+        "wymiary_i_limity": wymiary,
+        "zasady_lokalne_teraz": lokalne,
+        "zmiany_w_najblizszych_dniach": [z[1] for z in zmiany],
+    }
+
+
+def analiza_ai(lokalizacja: str, dane_sobota: dict, dane_niedziela: dict, przepisy: dict = None) -> str:
     """Wysyła dane pogodowe (sobota + niedziela) do Claude i prosi o ocenę warunków na ryby."""
     if not ANTHROPIC_API_KEY:
         raise RuntimeError(
@@ -272,7 +402,9 @@ def analiza_ai(lokalizacja: str, dane_sobota: dict, dane_niedziela: dict) -> str
         "SOBOTA: 1 zdanie ogólnej oceny, potem 1-2 zdania dla dnia i 1-2 zdania dla wieczoru.\n"
         "NIEDZIELA: analogicznie.\n"
         "Na końcu jedno zdanie: który dzień/pora wygląda najlepiej i jedno praktyczne "
-        "zalecenie (np. metoda/miejsce/pora). Bez zbędnego wstępu i bez nagłówków markdown."
+        "zalecenie (np. metoda/miejsce/pora). Bez zbędnego wstępu i bez nagłówków markdown. "
+        "Jeśli dostaniesz aktualne przepisy (okresy ochronne, lokalne zakazy), nie polecaj "
+        "zabierania gatunków w okresie ochronnym ani metod, które są w tym czasie zakazane."
     )
 
     user_content = (
@@ -280,6 +412,8 @@ def analiza_ai(lokalizacja: str, dane_sobota: dict, dane_niedziela: dict) -> str
         f"Dane na sobotę:\n{json.dumps(dane_sobota, ensure_ascii=False, indent=2)}\n\n"
         f"Dane na niedzielę:\n{json.dumps(dane_niedziela, ensure_ascii=False, indent=2)}"
     )
+    if przepisy:
+        user_content += f"\n\nAktualne przepisy:\n{json.dumps(przepisy, ensure_ascii=False, indent=2)}"
 
     ostatni_blad = None
     for probe in range(4):  # kilka prób na wypadek chwilowego przeciążenia API (5xx/429)
@@ -469,8 +603,69 @@ def zbuduj_sekcje_dnia(nazwa_dnia: str, data_str: str, dane_dnia: dict) -> str:
     </div>"""
 
 
+def zbuduj_sekcje_przepisow(przepisy: dict) -> str:
+    """Sekcja maila z okresami ochronnymi, wymiarami i lokalnymi zakazami na ten weekend."""
+    styl_h = "font-size:15px;color:#0f172a;border-top:1px solid #e2e8f0;padding-top:16px;margin:0 0 8px;"
+    styl_p = "font-size:13px;line-height:1.5;color:#1e293b;margin:0 0 8px;"
+    czesci = [f'<h3 style="{styl_h}">📏 Przepisy na ten weekend</h3>']
+
+    if przepisy["okres_ochronny_teraz"]:
+        pozycje = "".join(
+            f"<li>{html.escape(o['gatunek'])} ({o['okres']}, zabierać od {o['mozna_zabierac_od']})</li>"
+            for o in przepisy["okres_ochronny_teraz"])
+        czesci.append(f'<p style="{styl_p}"><b style="color:#dc2626;">Okres ochronny, nie zabierasz:</b></p>'
+                      f'<ul style="{styl_p}padding-left:18px;">{pozycje}</ul>')
+    else:
+        czesci.append(f'<p style="{styl_p}">Żaden z gatunków z tabeli nie ma teraz okresu ochronnego.</p>')
+
+    if przepisy["zasady_lokalne_teraz"]:
+        pozycje = "".join(f"<li>{html.escape(z)}</li>" for z in przepisy["zasady_lokalne_teraz"])
+        czesci.append(f'<p style="{styl_p}"><b>Na łowisku obowiązuje:</b></p>'
+                      f'<ul style="{styl_p}padding-left:18px;">{pozycje}</ul>')
+
+    if przepisy["zmiany_w_najblizszych_dniach"]:
+        pozycje = "".join(f"<li>{html.escape(z)}</li>" for z in przepisy["zmiany_w_najblizszych_dniach"])
+        czesci.append(f'<p style="{styl_p}"><b>Wkrótce:</b></p>'
+                      f'<ul style="{styl_p}padding-left:18px;">{pozycje}</ul>')
+
+    wiersze = "".join(
+        f'<tr><td style="padding:4px 0;color:{"#dc2626" if w["okres_ochronny_teraz"] else "#0f172a"};">'
+        f'{html.escape(w["gatunek"])}{" 🚫" if w["okres_ochronny_teraz"] else ""}</td>'
+        f'<td style="padding:4px 0;text-align:center;">{w["wymiar"]}</td>'
+        f'<td style="padding:4px 0;text-align:right;color:#64748b;">{html.escape(w["limit"])}</td></tr>'
+        for w in przepisy["wymiary_i_limity"])
+    czesci.append(f"""
+            <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:6px;">
+              <tr style="color:#64748b;font-size:12px;">
+                <td style="padding:4px 0;">Gatunek</td>
+                <td style="padding:4px 0;text-align:center;">Wymiar</td>
+                <td style="padding:4px 0;text-align:right;">Limit/dobę</td>
+              </tr>{wiersze}
+            </table>
+            <p style="font-size:11px;color:#94a3b8;margin:0;">{html.escape(GATUNKI_PRZYPIS)}
+              Źródło: {html.escape(PRZEPISY_ZRODLO)}. Przed wyjazdem sprawdź aktualny regulamin.</p>""")
+    return "\n".join(czesci)
+
+
+def przepisy_plain(przepisy: dict) -> str:
+    """Wersja tekstowa sekcji przepisów do maila plain-text."""
+    linie = ["PRZEPISY NA TEN WEEKEND"]
+    if przepisy["okres_ochronny_teraz"]:
+        linie.append("Okres ochronny (nie zabierasz): " + ", ".join(
+            f"{o['gatunek']} (do {o['okres'].split('–')[1]})" for o in przepisy["okres_ochronny_teraz"]))
+    linie += [f"- {z}" for z in przepisy["zasady_lokalne_teraz"]]
+    if przepisy["zmiany_w_najblizszych_dniach"]:
+        linie.append("Wkrótce: " + "; ".join(przepisy["zmiany_w_najblizszych_dniach"]))
+    linie.append("Wymiary: " + ", ".join(
+        f"{w['gatunek'].lower()} {w['wymiar']}" for w in przepisy["wymiary_i_limity"] if w["wymiar"] != "—"))
+    linie.append(f"Źródło: {PRZEPISY_ZRODLO}. Przed wyjazdem sprawdź aktualny regulamin.")
+    return "\n".join(linie)
+
+
 def zbuduj_html_maila(lokalizacja: str, sobota: date, niedziela: date,
-                       dane_sobota: dict, dane_niedziela: dict, podsumowanie_ai: str) -> str:
+                       dane_sobota: dict, dane_niedziela: dict, podsumowanie_ai: str,
+                       przepisy: dict = None) -> str:
+    sekcja_przepisow = zbuduj_sekcje_przepisow(przepisy) if przepisy else ""
     sekcja_sobota = zbuduj_sekcje_dnia("Sobota", sobota.strftime("%d.%m.%Y"), dane_sobota)
     sekcja_niedziela = zbuduj_sekcje_dnia("Niedziela", niedziela.strftime("%d.%m.%Y"), dane_niedziela)
     podsumowanie_html = html.escape(podsumowanie_ai).replace("\n", "<br>")
@@ -497,6 +692,7 @@ def zbuduj_html_maila(lokalizacja: str, sobota: date, niedziela: date,
               Ocena AI
             </h3>
             <p style="font-size:14px;line-height:1.6;color:#1e293b;">{podsumowanie_html}</p>
+            {sekcja_przepisow}
           </div>
           <div style="background-color:#f8fafc;padding:12px 18px;color:#94a3b8;font-size:11px;">
             Wiadomość wygenerowana automatycznie przez rybackie_prognozy.py
@@ -534,7 +730,8 @@ def main():
         dane_niedziela = wyciagnij_dane_dla_dnia(surowe, niedziela)
 
         log("[info] Wysyłam dane do AI po analizę...")
-        podsumowanie = analiza_ai(LOCATION_NAME, dane_sobota, dane_niedziela)
+        przepisy = przepisy_na_weekend(sobota, niedziela)
+        podsumowanie = analiza_ai(LOCATION_NAME, dane_sobota, dane_niedziela, przepisy)
 
         temat = (
             f"Warunki na ryby - {LOCATION_NAME}, weekend "
@@ -544,10 +741,12 @@ def main():
             f"Łowisko: {LOCATION_NAME}\n"
             f"Sobota: {sobota.strftime('%d.%m.%Y')} | Niedziela: {niedziela.strftime('%d.%m.%Y')}\n\n"
             f"{podsumowanie}\n\n"
+            f"{przepisy_plain(przepisy)}\n\n"
             "---\n"
             "Wiadomość wygenerowana automatycznie przez rybackie_prognozy.py"
         )
-        tresc_html = zbuduj_html_maila(LOCATION_NAME, sobota, niedziela, dane_sobota, dane_niedziela, podsumowanie)
+        tresc_html = zbuduj_html_maila(LOCATION_NAME, sobota, niedziela, dane_sobota, dane_niedziela, podsumowanie,
+                                       przepisy)
 
         log("[info] Wysyłam e-mail...")
         wyslij_mail(temat, tresc_plain, tresc_html)
