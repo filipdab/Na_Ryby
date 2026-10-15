@@ -8,7 +8,8 @@ Skrypt na Raspberry Pi, który co tydzień generuje i wysyła mailem prognozę w
 2. **Faza Księżyca** — liczona lokalnie (bez zewnętrznego API) dla obu dni.
 3. **Indeks aktywności ryb (1–10)** — lokalny, regułowy wskaźnik uwzględniający trend ciśnienia, siłę wiatru, zachmurzenie, opady i fazę Księżyca — liczony osobno dla dnia i wieczoru każdego dnia.
 4. **Analiza AI** — wszystkie powyższe dane trafiają do modelu Claude Haiku 4.5 (Anthropic API), który pisze krótką ocenę warunków na sobotę i niedzielę (dzień/wieczór) plus jedną praktyczną rekomendację.
-5. **E-mail** — gotowy raport wysyłany jest jako czytelny, mobilny HTML (kolorowe karty z indeksem aktywności) do listy odbiorców, z wersją plain-text jako fallback.
+5. **Przepisy** — sekcja z okresami ochronnymi, wymiarami i limitami (zasady Okręgu Mazowieckiego PZW) oraz lokalnymi zakazami dla Zalewu Zegrzyńskiego, z zapowiedzią zmian w najbliższych 2 tygodniach. Tabela `GATUNKI` i lista `ZASADY_LOKALNE` w skrypcie wymagają aktualizacji raz w roku, gdy PZW publikuje nowy regulamin. AI dostaje te przepisy i nie poleca zabierania ryb w okresie ochronnym.
+6. **E-mail** — gotowy raport wysyłany jest jako czytelny, mobilny HTML (kolorowe karty z indeksem aktywności) do listy odbiorców, z wersją plain-text jako fallback.
 
 Skrypt ma wbudowane ponawianie zapytań (retry z backoffem) zarówno dla Open-Meteo, jak i Anthropic API, na wypadek chwilowych błędów 429/5xx.
 
