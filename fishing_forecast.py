@@ -37,6 +37,7 @@ from __future__ import annotations  # kompatybilność ze starszym Pythonem (np.
 
 import os
 import sys
+import html
 import json
 import math
 import time
@@ -46,6 +47,23 @@ from email.mime.multipart import MIMEMultipart
 from datetime import date, timedelta, datetime
 
 import requests
+
+
+
+def wczytaj_env(sciezka: str) -> None:
+    """Wczytuje zmienne KLUCZ=wartość z pliku .env (bez nadpisywania już ustawionych)."""
+    if not os.path.isfile(sciezka):
+        return
+    with open(sciezka, encoding="utf-8") as f:
+        for linia in f:
+            linia = linia.strip()
+            if not linia or linia.startswith("#") or "=" not in linia:
+                continue
+            klucz, wartosc = linia.split("=", 1)
+            os.environ.setdefault(klucz.strip(), wartosc.strip().strip('"').strip("'"))
+
+
+wczytaj_env(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 # ============================== KONFIGURACJA ==============================
 # Dane wrażliwe (lokalizacja, adresy e-mail, klucze) wczytywane są ze
@@ -158,6 +176,9 @@ def pobierz_surowe_dane_pogodowe() -> dict:
     raise RuntimeError(f"Nie udało się pobrać danych z Open-Meteo po kilku próbach: {ostatni_blad}")
 
 
+DNI_TYGODNIA = ["poniedziałek", "wtorek", "środa", "czwartek", "piątek", "sobota", "niedziela"]
+
+
 def wyciagnij_dane_dla_dnia(surowe: dict, target_date: date) -> dict:
     """Wyciąga uśrednione dane dzienne/wieczorne + fazę księżyca dla jednego dnia z surowej odpowiedzi API."""
     hourly = surowe["hourly"]
@@ -179,22 +200,27 @@ def wyciagnij_dane_dla_dnia(surowe: dict, target_date: date) -> dict:
         if not temps:
             return None
         srednia_ms = sum(winds) / len(winds)
+        # Kierunek wiatru to kąt - zwykła średnia z 350° i 10° dałaby 180°, więc liczymy średnią wektorową
+        sin_sr = sum(math.sin(math.radians(k)) for k in winddirs)
+        cos_sr = sum(math.cos(math.radians(k)) for k in winddirs)
+        kierunek = round(math.degrees(math.atan2(sin_sr, cos_sr))) % 360
         return {
             "temp_min": min(temps), "temp_max": max(temps),
             "wiatr_srednia_ms": round(srednia_ms, 1),
             "wiatr_srednia_kmh": round(srednia_ms * 3.6, 1),
             "wiatr_srednia_wezly": round(srednia_ms * 1.943844, 1),
-            "wiatr_kierunek": round(sum(winddirs) / len(winddirs)),
+            "wiatr_kierunek": kierunek,
             "cisnienie_hpa": round(sum(press) / len(press), 1),
             "zachmurzenie_proc": round(sum(clouds) / len(clouds)),
-            "opady_prawdopodobienstwo_proc": max(precs) if precs else 0,
+            "opady_prawdopodobienstwo_proc": max((p for p in precs if p is not None), default=0),
         }
 
     # Trend ciśnienia: średnie ciśnienie z 2 dni przed target_date
+    poczatek_trendu = (target_date - timedelta(days=2)).isoformat()
     trend_press = []
     for i, t in enumerate(times):
         d = t.split("T")[0]
-        if d < target_str:
+        if poczatek_trendu <= d < target_str:
             trend_press.append(hourly["surface_pressure"][i])
     cisnienie_wczesniej = round(sum(trend_press) / len(trend_press), 1) if trend_press else None
 
@@ -211,7 +237,7 @@ def wyciagnij_dane_dla_dnia(surowe: dict, target_date: date) -> dict:
 
     return {
         "data": target_str,
-        "dzien_tygodnia": target_date.strftime("%A"),
+        "dzien_tygodnia": DNI_TYGODNIA[target_date.weekday()],
         "dzien": dzien,      # 6:00-17:00
         "wieczor": wieczor,  # 18:00-22:00
         "cisnienie_srednie_2dni_wczesniej_hpa": cisnienie_wczesniej,
@@ -376,12 +402,11 @@ def oblicz_indeks_aktywnosci(dane_pory: dict, cisnienie_trend, ksiezyc: dict) ->
     return {"wynik": wynik, "etykieta": etykieta, "kolor": kolor}
 
 
-def zbuduj_karte_pory_dnia(pora_nazwa: str, dane_pory: dict, ksiezyc: dict, cisnienie_trend=None) -> str:
+def zbuduj_karte_pory_dnia(pora_nazwa: str, dane_pory: dict, ksiezyc: dict, indeks: dict) -> str:
     """Buduje pojedynczą 'kartę' (Dzień lub Wieczór) z danymi w pionie - czytelne na telefonie."""
     if not dane_pory:
         return ""
     ikona = ikona_pogody(dane_pory["zachmurzenie_proc"], dane_pory["opady_prawdopodobienstwo_proc"])
-    indeks = oblicz_indeks_aktywnosci(dane_pory, cisnienie_trend, ksiezyc)
 
     def wiersz(etykieta: str, wartosc: str) -> str:
         return f"""
@@ -428,9 +453,10 @@ def zbuduj_karte_pory_dnia(pora_nazwa: str, dane_pory: dict, ksiezyc: dict, cisn
 
 def zbuduj_sekcje_dnia(nazwa_dnia: str, data_str: str, dane_dnia: dict) -> str:
     """Buduje sekcję dla jednego dnia (Sobota lub Niedziela) z dwiema kartami: Dzień i Wieczór."""
-    trend = dane_dnia.get("cisnienie_srednie_2dni_wczesniej_hpa")
-    karta_dzien = zbuduj_karte_pory_dnia("☀️ Dzień", dane_dnia["dzien"], dane_dnia["ksiezyc"], trend)
-    karta_wieczor = zbuduj_karte_pory_dnia("🌙 Wieczór", dane_dnia["wieczor"], dane_dnia["ksiezyc"], trend)
+    karta_dzien = zbuduj_karte_pory_dnia("☀️ Dzień", dane_dnia["dzien"], dane_dnia["ksiezyc"],
+                                         dane_dnia["indeks_aktywnosci_ryb_dzien"])
+    karta_wieczor = zbuduj_karte_pory_dnia("🌙 Wieczór", dane_dnia["wieczor"], dane_dnia["ksiezyc"],
+                                           dane_dnia["indeks_aktywnosci_ryb_wieczor"])
 
     return f"""
     <div style="margin-bottom:20px;">
@@ -447,7 +473,7 @@ def zbuduj_html_maila(lokalizacja: str, sobota: date, niedziela: date,
                        dane_sobota: dict, dane_niedziela: dict, podsumowanie_ai: str) -> str:
     sekcja_sobota = zbuduj_sekcje_dnia("Sobota", sobota.strftime("%d.%m.%Y"), dane_sobota)
     sekcja_niedziela = zbuduj_sekcje_dnia("Niedziela", niedziela.strftime("%d.%m.%Y"), dane_niedziela)
-    podsumowanie_html = podsumowanie_ai.replace("\n", "<br>")
+    podsumowanie_html = html.escape(podsumowanie_ai).replace("\n", "<br>")
 
     return f"""\
     <html>
@@ -457,7 +483,7 @@ def zbuduj_html_maila(lokalizacja: str, sobota: date, niedziela: date,
                     box-shadow:0 1px 3px rgba(0,0,0,0.1);">
           <div style="background-color:#0f172a;color:#ffffff;padding:16px 18px;">
             <h2 style="margin:0;font-size:18px;">🎣 Warunki na ryby</h2>
-            <p style="margin:4px 0 0;color:#cbd5e1;font-size:13px;">{lokalizacja}</p>
+            <p style="margin:4px 0 0;color:#cbd5e1;font-size:13px;">{html.escape(lokalizacja)}</p>
             <p style="margin:2px 0 0;color:#94a3b8;font-size:12px;">
               Weekend {sobota.strftime('%d.%m')} – {niedziela.strftime('%d.%m.%Y')}
             </p>
