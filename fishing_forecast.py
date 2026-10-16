@@ -695,7 +695,7 @@ def zbuduj_html_maila(lokalizacja: str, sobota: date, niedziela: date,
             {sekcja_przepisow}
           </div>
           <div style="background-color:#f8fafc;padding:12px 18px;color:#94a3b8;font-size:11px;">
-            Wiadomość wygenerowana automatycznie przez rybackie_prognozy.py
+            Wiadomość wygenerowana automatycznie przez aplikację FD v.0.2
           </div>
         </div>
       </body>
@@ -743,7 +743,7 @@ def main():
             f"{podsumowanie}\n\n"
             f"{przepisy_plain(przepisy)}\n\n"
             "---\n"
-            "Wiadomość wygenerowana automatycznie przez rybackie_prognozy.py"
+            "Wiadomość wygenerowana automatycznie przez aplikację FD v.0.2"
         )
         tresc_html = zbuduj_html_maila(LOCATION_NAME, sobota, niedziela, dane_sobota, dane_niedziela, podsumowanie,
                                        przepisy)
